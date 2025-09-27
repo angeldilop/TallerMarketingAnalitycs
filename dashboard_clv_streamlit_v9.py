@@ -1,8 +1,7 @@
-# dashboard_clv_streamlit_v9.py
+# dashboard_clv_streamlit_v10.py
 # ----------------------------------------------------------------------------
-# Fix gráfico 3: convertir a numérico el "Valor total reclamado" con parser
-# robusto (soporta '1.234,56', '1,234.56', '$1,234', etc.).
-# Además, formatea a 2 decimales en gráfico y tabla.
+# Igual que v9, pero volvemos a incluir las TABLAS BASE para los gráficos 1 y 2
+# en expanders debajo de cada visualización.
 # ----------------------------------------------------------------------------
 
 import io
@@ -58,15 +57,11 @@ def parse_money(series: pd.Series) -> pd.Series:
        Soporta: '1.234,56', '1,234.56', '1234,56', '$1,234', '€1.234,00', etc.
     """
     s = series.astype(str).str.strip()
-    # conservar dígitos, coma, punto y signo
-    s = s.str.replace(r"[^0-9,.\-]", "", regex=True)
-    # si hay coma y punto -> quitar comas (supuestas miles)
+    s = s.str.replace(r"[^0-9,.\-]", "", regex=True)  # conservar dígitos, coma, punto y signo
     both = s.str.contains(",") & s.str.contains(r"\.")
-    s = s.where(~both, s.str.replace(",", "", regex=False))
-    # quitar comas de miles tipo 12,345 -> 12345 (cuando no había punto decimal)
-    s = s.str.replace(r"(?<=\d),(?=\d{3}(\D|$))", "", regex=True)
-    # convertir coma decimal a punto
-    s = s.str.replace(",", ".", regex=False)
+    s = s.where(~both, s.str.replace(",", "", regex=False))              # quitar comas si hay ambos
+    s = s.str.replace(r"(?<=\d),(?=\d{3}(\D|$))", "", regex=True)        # comas de miles
+    s = s.str.replace(",", ".", regex=False)                             # coma decimal -> punto
     return pd.to_numeric(s, errors="coerce")
 
 # ---------------- app ----------------
@@ -96,7 +91,7 @@ if col_claim:
     df[col_claim] = parse_money(df[col_claim])
 
 # filtros
-st.sidebar.subheader("Filtros")
+st.sidebar.header("Filtros")
 states = st.sidebar.multiselect("Estado", sorted(df[col_state].dropna().unique().tolist())) if col_state else []
 resp   = st.sidebar.multiselect("Respuesta", sorted(df[col_resp].dropna().unique().tolist())) if col_resp else []
 cov    = st.sidebar.multiselect("Cobertura", sorted(df[col_cov].dropna().unique().tolist())) if col_cov else []
@@ -132,8 +127,6 @@ else:
     else:
         y2_range = None
 
-    from plotly.subplots import make_subplots
-    import plotly.graph_objects as go
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(go.Bar(
@@ -156,36 +149,42 @@ else:
     fig.update_xaxes(title_text="Estado")
     st.plotly_chart(fig, use_container_width=True)
 
+    # >>> Tabla del gráfico 1
+    with st.expander("Ver tabla base (gráfico 1)"):
+        st.dataframe(base.style.format({"Clientes": "{:,d}", "CLV promedio": "{:,.2f}"}), use_container_width=True)
+
 # ---------------- Chart 2 ----------------
 st.subheader("2) Clientes por Canal de Venta (barras) con Género")
-if find_col(df, ["sales_channel","channel","canal"]) and find_col(df, ["gender","genero"]):
-    col_sales = find_col(df, ["sales_channel","channel","canal"])
-    col_gender = find_col(df, ["gender","genero"])
+if (col_sales is None) or (col_gender is None):
+    st.info("No se encontraron las columnas de Canal de Venta y/o Género.")
+else:
     df_f[col_gender] = df_f[col_gender].astype(str).str.strip().str.title()
-    df_c2 = (df_f.groupby([col_sales, col_gender]).size().reset_index(name="Clientes"))
+    df_c2 = df_f.groupby([col_sales, col_gender]).size().reset_index(name="Clientes")
     order_channels = (df_c2.groupby(col_sales)["Clientes"].sum().sort_values(ascending=False).index.tolist())
-    fig2 = px.bar(df_c2, x=col_sales, y="Clientes", color=col_gender, category_orders={col_sales: order_channels},
-                  barmode="group", text="Clientes", color_discrete_sequence=["#4E79A7", "#F28E2B"])
+
+    fig2 = px.bar(df_c2, x=col_sales, y="Clientes", color=col_gender,
+                  category_orders={col_sales: order_channels},
+                  barmode="group", text="Clientes",
+                  color_discrete_sequence=["#4E79A7", "#F28E2B"])
     fig2.update_traces(textposition="outside")
-    fig2.update_layout(height=520, margin=dict(l=40,r=40,t=30,b=60), legend_title_text="Género",
-                       xaxis_title="Canal de Venta", yaxis_title="Clientes")
+    fig2.update_layout(height=520, margin=dict(l=40,r=40,t=30,b=60),
+                       legend_title_text="Género", xaxis_title="Canal de Venta", yaxis_title="Clientes")
     fig2.update_yaxes(tickformat=",d")
     st.plotly_chart(fig2, use_container_width=True)
+
+    # >>> Tabla del gráfico 2
+    with st.expander("Ver tabla base (gráfico 2)"):
+        st.dataframe(df_c2.sort_values(["Clientes"], ascending=False).style.format({"Clientes":"{:,.0f}"}),
+                     use_container_width=True)
 
 # ---------------- Chart 3 ----------------
 st.subheader("3) Valor total reclamado por Clase de Vehículo")
 if (col_vclass is None) or (col_claim is None):
     st.info("No se encontraron las columnas de **Clase de Vehículo** y/o **Valor total reclamado**.")
 else:
-    # asegurar numérico
     df_f[col_claim] = parse_money(df_f[col_claim])
-
-    df_c3 = (df_f.groupby(col_vclass)[col_claim]
-             .sum(min_count=1)
-             .reset_index(name="Valor total reclamado")
-             .dropna(subset=["Valor total reclamado"]))
-
-    df_c3 = df_c3.sort_values("Valor total reclamado", ascending=False)
+    df_c3 = (df_f.groupby(col_vclass)[col_claim].sum(min_count=1).reset_index(name="Valor total reclamado")
+             .dropna(subset=["Valor total reclamado"]).sort_values("Valor total reclamado", ascending=False))
 
     fig3 = px.bar(df_c3, x=col_vclass, y="Valor total reclamado", text="Valor total reclamado",
                   labels={col_vclass: "Clase de Vehículo", "Valor total reclamado": "Valor total reclamado"},
